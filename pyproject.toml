@@ -16,6 +16,8 @@ classifiers = [
 
 dependencies = [
     "python-jenkins",
+    "platformdirs",
+    "urllib3"
 ]
 
 [project.scripts]
