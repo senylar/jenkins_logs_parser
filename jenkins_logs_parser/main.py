@@ -1,6 +1,7 @@
 import argparse
 import configparser
 import subprocess
+import tempfile
 import warnings
 import sys
 from pathlib import Path
@@ -36,6 +37,10 @@ def create_default_config():
 
     config['logs'] = {
         'path': '~/ditwork/ditlogs/'
+    }
+
+    config['proxy'] = {
+        'url': ''  # Пустой URL означает "не использовать прокси"; пример: http://host:port
     }
 
     return config
@@ -146,7 +151,6 @@ def show_config():
 
 def create_jenkins_server(config):
     """Создает и возвращает экземпляр Jenkins-сервера на основе конфигурации."""
-    #try:
     jenkins_config = config['jenkins']
     token = jenkins_config.get('token')
     if not token:
@@ -160,19 +164,17 @@ def create_jenkins_server(config):
     # Отключаем проверку SSL-сертификата
     server._session.verify = False
 
-    server._session.proxies = {
+    # Настраиваем прокси из конфигурации (необязательно)
+    proxy_url = config.get('proxy', 'url', fallback='').strip()
+    if proxy_url:
+        server._session.proxies = {
+            "http": proxy_url,
+            "https": proxy_url,
+        }
 
-        "http": "http://192.168.64.5:8899",
-        "https": "http://192.168.64.5:8899"
-    }
     # Проверяем соединение
     server.get_version()
     return server
-    # except jenkins.JenkinsException as e:
-    #     raise ConnectionError(
-    #         f"Не удалось подключиться к Jenkins.  Проверьте URL, имя пользователя и токен.  Ошибка: {e}")
-    # except KeyError:
-    #     raise ValueError("В конфигурации отсутствует необходимая секция [jenkins] или её ключи.")
 
 
 def get_job_build_history(server, job_name):
@@ -266,14 +268,32 @@ def save_logs_to_file(logs, job_name, base_path_str):
 
 
 def show_logs_in_lnav(logs):
-    """Отправляет логи в lnav через stdin."""
+    """Отправляет логи в lnav через stdin (Linux/macOS) или в блокнот через временный файл (Windows)."""
     if not logs:
         print("Нет логов для отображения.")
         return
 
-    print("Открываю логи в lnav...")
+    print("Открываю логи в просмотрщике...")
     text_to_show = "\n\n--- END OF BUILD ---\n\n".join(logs).encode("utf-8")
 
+    # На Windows lnav недоступен — пишем во временный файл и открываем блокнотом
+    if sys.platform == "win32":
+        tmp = tempfile.NamedTemporaryFile(
+            mode='wb', suffix='.log', delete=False
+        )
+        try:
+            tmp.write(text_to_show)
+            tmp.close()
+            subprocess.run(["notepad.exe", tmp.name], check=True)
+        except FileNotFoundError:
+            print("Ошибка: команда 'notepad.exe' не найдена.")
+        except subprocess.CalledProcessError as e:
+            print(f"Ошибка при открытии блокнота: {e}")
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+        return
+
+    # Linux / macOS — используем lnav
     try:
         subprocess.run(["lnav", "-"], input=text_to_show, check=True)
     except FileNotFoundError:
