@@ -234,6 +234,11 @@ class TestParseBuildNumbers(unittest.TestCase):
         result = parse_build_numbers('latest', 'job', server)
         self.assertEqual(result, [5])
 
+    def test_latest_empty_builds_returns_empty(self):
+        server = self._make_server([])
+        result = parse_build_numbers('latest', 'job', server)
+        self.assertEqual(result, [])
+
     def test_single_build(self):
         server = self._make_server([1, 2, 3])
         result = parse_build_numbers('2', 'job', server)
@@ -244,41 +249,80 @@ class TestParseBuildNumbers(unittest.TestCase):
         result = parse_build_numbers('1,3', 'job', server)
         self.assertEqual(result, [3, 1])
 
-    def test_range(self):
+    def test_range_colon(self):
         server = self._make_server(range(1, 11))
-        result = parse_build_numbers('3-5', 'job', server)
+        result = parse_build_numbers('3:5', 'job', server)
         self.assertEqual(result, [5, 4, 3])
 
     def test_reverse_range_handled(self):
         server = self._make_server(range(1, 11))
-        result = parse_build_numbers('5-3', 'job', server)
+        result = parse_build_numbers('5:3', 'job', server)
         self.assertEqual(result, [5, 4, 3])
 
     def test_mixed_comma_and_range(self):
         server = self._make_server(range(1, 11))
-        result = parse_build_numbers('1,3-5', 'job', server)
+        result = parse_build_numbers('1,3:5', 'job', server)
         self.assertEqual(result, [5, 4, 3, 1])
 
-    def test_invalid_build_raises(self):
-        server = self._make_server([1, 2, 3])
-        with self.assertRaises(ValueError):
-            parse_build_numbers('99', 'job', server)
+    def test_negative_index(self):
+        server = self._make_server(range(1, 11))  # builds 1..10
+        result = parse_build_numbers('-2', 'job', server)
+        # sorted ascending: [1..10], index -2 = 9
+        self.assertEqual(result, [9])
+
+    def test_negative_index_minus_one(self):
+        server = self._make_server(range(1, 6))  # builds 1..5
+        result = parse_build_numbers('-1', 'job', server)
+        self.assertEqual(result, [5])
+
+    def test_slice_last_n(self):
+        server = self._make_server(range(1, 11))  # builds 1..10
+        result = parse_build_numbers(':-3', 'job', server)
+        # sorted ascending: [1..10], [-3:] = [8, 9, 10]
+        self.assertEqual(result, [10, 9, 8])
+
+    def test_slice_last_all(self):
+        server = self._make_server(range(1, 6))
+        result = parse_build_numbers(':-5', 'job', server)
+        self.assertEqual(result, [5, 4, 3, 2, 1])
 
     def test_invalid_range_format_raises(self):
         server = self._make_server([1, 2, 3])
         with self.assertRaises(ValueError):
-            parse_build_numbers('a-b', 'job', server)
+            parse_build_numbers('a:b', 'job', server)
 
     def test_non_numeric_raises(self):
         server = self._make_server([1, 2, 3])
         with self.assertRaises(ValueError):
             parse_build_numbers('abc', 'job', server)
 
-    def test_empty_builds_raises(self):
-        server = MagicMock()
-        server.get_job_info.return_value = {'builds': []}
+    def test_invalid_negative_index_raises(self):
+        server = self._make_server([1, 2, 3])
         with self.assertRaises(ValueError):
-            parse_build_numbers('latest', 'job', server)
+            parse_build_numbers('-abc', 'job', server)
+
+    def test_negative_index_out_of_range_raises(self):
+        server = self._make_server([1, 2, 3])
+        with self.assertRaises(ValueError):
+            parse_build_numbers('-100', 'job', server)
+
+    def test_negative_index_empty_raises(self):
+        server = self._make_server([])
+        with self.assertRaises(ValueError):
+            parse_build_numbers('-1', 'job', server)
+
+
+
+    def test_invalid_slice_raises(self):
+        server = self._make_server([1, 2, 3])
+        with self.assertRaises(ValueError):
+            parse_build_numbers(':abc', 'job', server)
+
+    def test_no_validation_of_nonexistent_build(self):
+        # Build 99 does not exist but should NOT raise
+        server = self._make_server([1, 2, 3])
+        result = parse_build_numbers('99', 'job', server)
+        self.assertEqual(result, [99])
 
 
 # ---------------------------------------------------------------------------
@@ -398,3 +442,4 @@ class TestShowLogsInLnavWindows(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

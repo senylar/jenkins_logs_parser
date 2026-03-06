@@ -8,6 +8,7 @@ from pathlib import Path
 
 import platformdirs
 import requests
+from tqdm import tqdm
 from urllib3.exceptions import InsecureRequestWarning
 
 # Игнорируем предупреждения о небезопасном соединении
@@ -229,53 +230,72 @@ def get_job_build_history(server, job_name):
 
 def parse_build_numbers(builds_str, job_name, server):
     """
-    Парсит строку с номерами билдов (например, 'latest', '1,2,3', '5-10')
-    и возвращает список валидных номеров.
+    Парсит строку с номерами билдов и возвращает список номеров.
+
+    Поддерживаемые форматы:
+      - 'latest'  — последний билд.
+      - '5'       — один конкретный билд.
+      - '-2'      — второй с конца (отрицательный индекс в отсортированном списке).
+      - ':-20'    — последние 20 билдов (срез от -20 до конца).
+      - '30:40'   — диапазон билдов с 30 по 40 включительно.
+      - '1,2,3'   — несколько билдов через запятую.
+      - '1,30:40' — комбинация.
     """
     available_builds = get_job_build_history(server, job_name)
-    if not available_builds:
-        raise ValueError("Для данной джобы не найдено ни одного билда.")
+    sorted_builds = sorted(available_builds)  # возрастающий порядок для индексации
 
     if builds_str == "latest":
-        return [max(available_builds)]
+        return [sorted_builds[-1]] if sorted_builds else []
+
+    # Срез вида :-20 → последние 20 билдов
+    if builds_str.startswith(':'):
+        try:
+            idx = int(builds_str[1:])
+        except ValueError:
+            raise ValueError(f"Неверный формат среза: '{builds_str}'. Ожидается ':-число' (например, ':-20').")
+        sliced = sorted_builds[idx:]
+        return sorted(sliced, reverse=True)
+
+    # Отрицательный индекс вида -2 → второй с конца
+    if builds_str.startswith('-'):
+        try:
+            idx = int(builds_str)
+        except ValueError:
+            raise ValueError(f"Неверный индекс: '{builds_str}'. Ожидается отрицательное число (например, '-2').")
+        if not sorted_builds or idx < -len(sorted_builds):
+            raise ValueError(f"Индекс {builds_str} вне диапазона: доступно {len(sorted_builds)} билдов.")
+        return [sorted_builds[idx]]
 
     selected_builds = set()
     parts = builds_str.replace(" ", "").split(',')
 
     for part in parts:
-        if '-' in part:
+        if ':' in part:
             try:
-                start, end = map(int, part.split('-'))
+                start, end = map(int, part.split(':'))
                 if start > end:
                     start, end = end, start  # обрабатываем обратный диапазон
                 selected_builds.update(range(start, end + 1))
             except ValueError:
-                raise ValueError(f"Неверный формат диапазона: '{part}'. Ожидается 'число-число'.")
+                raise ValueError(f"Неверный формат диапазона: '{part}'. Ожидается 'число:число'.")
         else:
             try:
                 selected_builds.add(int(part))
             except ValueError:
-                raise ValueError(f"Неверный номер билда: '{part}'.  Ожидается число.")
-
-    # Проверяем, существуют ли запрошенные билды
-    invalid_builds = selected_builds - available_builds
-    if invalid_builds:
-        raise ValueError(
-            f"Неверные номера билдов: {sorted(list(invalid_builds))}. Доступные билды: {sorted(list(available_builds))[:10]}...")
+                raise ValueError(f"Неверный номер билда: '{part}'. Ожидается число.")
 
     return sorted(list(selected_builds), reverse=True)
 
 
 def get_logs(server, job_name, build_numbers):
     """Получает логи для указанных номеров билдов."""
-    print(f"Запрашиваю логи для билдов: {build_numbers}...")
     logs = []
-    for number in build_numbers:
+    for number in tqdm(build_numbers, desc="Загрузка билдов", unit="билд"):
         try:
             log = server.get_build_console_output(job_name, number)
             logs.append(log)
         except JenkinsNotFoundError:
-            print(f"Предупреждение: Билд номер {number} для джобы '{job_name}' не найден.")
+            tqdm.write(f"Предупреждение: Билд номер {number} для джобы '{job_name}' не найден.")
     return logs
 
 
@@ -363,12 +383,14 @@ def main():
         "-b", "--builds",
         type=str,
         default="latest",
-        help="Номера билдов для загрузки.  Форматы:\n"
+        help="Номера билдов для загрузки. Форматы:\n"
              "  - 'latest': последний билд (по умолчанию).\n"
              "  - '5':  один конкретный билд.\n"
+             "  - '-2': второй билд с конца.\n"
+             "  - ':-20': последние 20 билдов.\n"
+             "  - '30:40': диапазон билдов (включительно).\n"
              "  - '1,2,3': несколько билдов через запятую.\n"
-             "  - '5-10': диапазон билдов.\n"
-             "  - '1,5-10': можно комбинировать."
+             "  - '1,30:40': можно комбинировать."
     )
     parser.add_argument("-l", "--lnav", action='store_true', help="Открыть логи в lnav вместо сохранения в файл.")
 
