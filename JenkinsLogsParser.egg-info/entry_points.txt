@@ -1,2 +1,0 @@
-[console_scripts]
-jlt = jenkins_logs_parser.main:main
