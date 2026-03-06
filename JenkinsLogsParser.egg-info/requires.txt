@@ -1,0 +1,3 @@
+python-jenkins
+platformdirs
+urllib3
