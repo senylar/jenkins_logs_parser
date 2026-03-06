@@ -17,6 +17,7 @@ classifiers = [
 dependencies = [
     "requests",
     "platformdirs",
+    "tqdm",
 ]
 
 [project.scripts]
