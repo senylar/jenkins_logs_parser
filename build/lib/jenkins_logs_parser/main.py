@@ -5,6 +5,7 @@ import warnings
 import sys
 from pathlib import Path
 from urllib.error import HTTPError
+import requests
 
 import jenkins
 import platformdirs
@@ -13,8 +14,8 @@ from urllib3.exceptions import InsecureRequestWarning
 # Игнорируем предупреждения о небезопасном соединении
 warnings.simplefilter('ignore', InsecureRequestWarning)
 
-APP_NAME = "jenkins-logs"
-APP_AUTHOR = "jenkins-log-parser"
+APP_NAME = "jenkins-logs-parser"
+APP_AUTHOR = "LarinAV"
 
 
 def get_config_path():
@@ -30,12 +31,12 @@ def create_default_config():
 
     config['jenkins'] = {
         'url': 'https://jenkins.srpr.mos.ru',
-        'username': 'larinav4',
-        'token': ''  # Пустой токен по умолчанию
+        'username': '! CHANGE MY ! username',
+        'token': '  CHANGE MY ! token'
     }
 
     config['logs'] = {
-        'path': '~/ditwork/ditlogs/'
+        'path': '! CHANGE MY ! path/to/logs'
     }
 
     return config
@@ -151,14 +152,22 @@ def create_jenkins_server(config):
         token = jenkins_config.get('token')
         if not token:
             raise ValueError("Токен не установлен.  Запустите с параметром --setup для настройки.")
-
+        print("Подключаюсь к Jenkins...")
         server = jenkins.Jenkins(
             jenkins_config['url'],
             username=jenkins_config['username'],
             password=token
         )
         # Отключаем проверку SSL-сертификата
-        server._session.verify = False
+
+        session = requests.Session()
+        session.verify = False
+        session.proxies = {
+            "http": "192.168.64.5:8899",
+            "https": "192.168.64.5:8899"
+        }
+        server._session = session
+        print("SSL-сертификат отключен.")
         # Проверяем соединение
         server.get_version()
         return server
