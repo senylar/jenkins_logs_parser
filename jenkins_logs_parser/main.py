@@ -146,27 +146,33 @@ def show_config():
 
 def create_jenkins_server(config):
     """Создает и возвращает экземпляр Jenkins-сервера на основе конфигурации."""
-    try:
-        jenkins_config = config['jenkins']
-        token = jenkins_config.get('token')
-        if not token:
-            raise ValueError("Токен не установлен.  Запустите с параметром --setup для настройки.")
+    #try:
+    jenkins_config = config['jenkins']
+    token = jenkins_config.get('token')
+    if not token:
+        raise ValueError("Токен не установлен.  Запустите с параметром --setup для настройки.")
 
-        server = jenkins.Jenkins(
-            jenkins_config['url'],
-            username=jenkins_config['username'],
-            password=token
-        )
-        # Отключаем проверку SSL-сертификата
-        server._session.verify = False
-        # Проверяем соединение
-        server.get_version()
-        return server
-    except jenkins.JenkinsException as e:
-        raise ConnectionError(
-            f"Не удалось подключиться к Jenkins.  Проверьте URL, имя пользователя и токен.  Ошибка: {e}")
-    except KeyError:
-        raise ValueError("В конфигурации отсутствует необходимая секция [jenkins] или её ключи.")
+    server = jenkins.Jenkins(
+        jenkins_config['url'],
+        username=jenkins_config['username'],
+        password=token
+    )
+    # Отключаем проверку SSL-сертификата
+    server._session.verify = False
+
+    server._session.proxies = {
+
+        "http": "http://192.168.64.5:8899",
+        "https": "http://192.168.64.5:8899"
+    }
+    # Проверяем соединение
+    server.get_version()
+    return server
+    # except jenkins.JenkinsException as e:
+    #     raise ConnectionError(
+    #         f"Не удалось подключиться к Jenkins.  Проверьте URL, имя пользователя и токен.  Ошибка: {e}")
+    # except KeyError:
+    #     raise ValueError("В конфигурации отсутствует необходимая секция [jenkins] или её ключи.")
 
 
 def get_job_build_history(server, job_name):
@@ -312,46 +318,46 @@ def main():
 
     args = parser.parse_args()
 
-    try:
-        # Команды управления конфигурацией
-        if args.setup:
-            setup_config()
+    #try:
+    # Команды управления конфигурацией
+    if args.setup:
+        setup_config()
+        return
+
+    if args.show_config:
+        show_config()
+        return
+
+    # Основная функциональность - получение логов
+    if not args.job_name:
+        parser.error("Требуется указать имя джобы или использовать --setup/--show-config")
+
+    config, _ = load_config()
+
+    server = create_jenkins_server(config)
+
+    build_numbers = parse_build_numbers(args.builds, args.job_name, server)
+
+    logs = get_logs(server, args.job_name, build_numbers)
+
+    if args.lnav:
+        show_logs_in_lnav(logs)
+    else:
+        log_path = config.get('logs', 'path', fallback='empty')
+        if log_path == 'empty':
+            print("Укажите путь для сохранения логов в конфигурационном файле.")
             return
+        save_logs_to_file(logs, args.job_name, log_path)
 
-        if args.show_config:
-            show_config()
-            return
-
-        # Основная функциональность - получение логов
-        if not args.job_name:
-            parser.error("Требуется указать имя джобы или использовать --setup/--show-config")
-
-        config, _ = load_config()
-
-        server = create_jenkins_server(config)
-
-        build_numbers = parse_build_numbers(args.builds, args.job_name, server)
-
-        logs = get_logs(server, args.job_name, build_numbers)
-
-        if args.lnav:
-            show_logs_in_lnav(logs)
-        else:
-            log_path = config.get('logs', 'path', fallback='empty')
-            if log_path == 'empty':
-                print("Укажите путь для сохранения логов в конфигурационном файле.")
-                return
-            save_logs_to_file(logs, args.job_name, log_path)
-
-    except (ValueError, ConnectionError, FileNotFoundError) as e:
-        print(f"Ошибка: {e}")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nОперация прервана пользователем.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Произошла непредвиденная ошибка: {e}")
-        sys.exit(1)
+    # except (ValueError, ConnectionError, FileNotFoundError) as e:
+    #     print(f"Ошибка: {e}")
+    #     sys.exit(1)
+    # except KeyboardInterrupt:
+    #     print("\nОперация прервана пользователем.")
+    #     sys.exit(1)
+    # except Exception as e:
+    #     print(f"Произошла непредвиденная ошибка: {e}")
+    #     sys.exit(1)
 
 
 if __name__ == "__main__":

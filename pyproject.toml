@@ -21,4 +21,4 @@ dependencies = [
 ]
 
 [project.scripts]
-jlt = "jenkins_logs_parser.main:cli"
+jlt = "jenkins_logs_parser.main:main"
