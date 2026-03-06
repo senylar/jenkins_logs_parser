@@ -5,11 +5,13 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
-import jenkins
+import requests
 
 from jenkins_logs_parser.main import (
+    JenkinsClient,
+    JenkinsNotFoundError,
     create_default_config,
     create_jenkins_server,
     get_job_build_history,
@@ -18,6 +20,80 @@ from jenkins_logs_parser.main import (
     save_logs_to_file,
     show_logs_in_lnav,
 )
+
+
+# ---------------------------------------------------------------------------
+# JenkinsClient
+# ---------------------------------------------------------------------------
+
+def _make_client(base_url='https://jenkins.example.com'):
+    session = MagicMock()
+    return JenkinsClient(session, base_url), session
+
+
+class TestJenkinsClient(unittest.TestCase):
+
+    def test_get_version_raises_on_http_error(self):
+        client, session = _make_client()
+        resp = MagicMock(status_code=500)
+        resp.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
+        session.get.return_value = resp
+        with self.assertRaises(requests.HTTPError):
+            client.get_version()
+
+    def test_get_version_returns_header(self):
+        client, session = _make_client()
+        resp = MagicMock(status_code=200, headers={'X-Jenkins': '2.450'})
+        session.get.return_value = resp
+        self.assertEqual(client.get_version(), '2.450')
+
+    def test_get_version_unknown_when_header_missing(self):
+        client, session = _make_client()
+        resp = MagicMock(status_code=200, headers={})
+        session.get.return_value = resp
+        self.assertEqual(client.get_version(), 'unknown')
+
+    def test_get_job_info_returns_json(self):
+        client, session = _make_client()
+        payload = {'builds': [{'number': 1}]}
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = payload
+        session.get.return_value = resp
+        result = client.get_job_info('my-job')
+        self.assertEqual(result, payload)
+        # URL must contain /job/my-job
+        url_called = session.get.call_args[0][0]
+        self.assertIn('/job/my-job', url_called)
+
+    def test_get_job_info_404_raises(self):
+        client, session = _make_client()
+        session.get.return_value = MagicMock(status_code=404)
+        with self.assertRaises(JenkinsNotFoundError):
+            client.get_job_info('missing')
+
+    def test_get_job_info_nested_folder_url(self):
+        client, session = _make_client()
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {'builds': []}
+        session.get.return_value = resp
+        client.get_job_info('folder/job')
+        url_called = session.get.call_args[0][0]
+        self.assertIn('/job/folder/job/job', url_called)
+
+    def test_get_build_console_output_returns_text(self):
+        client, session = _make_client()
+        resp = MagicMock(status_code=200, text='build log here')
+        session.get.return_value = resp
+        result = client.get_build_console_output('my-job', 42)
+        self.assertEqual(result, 'build log here')
+        url_called = session.get.call_args[0][0]
+        self.assertIn('/42/consoleText', url_called)
+
+    def test_get_build_console_output_404_raises(self):
+        client, session = _make_client()
+        session.get.return_value = MagicMock(status_code=404)
+        with self.assertRaises(JenkinsNotFoundError):
+            client.get_build_console_output('my-job', 99)
 
 
 # ---------------------------------------------------------------------------
@@ -66,52 +142,57 @@ class TestCreateJenkinsServer(unittest.TestCase):
         with self.assertRaises(ValueError):
             create_jenkins_server(config)
 
-    @patch('jenkins_logs_parser.main.jenkins.Jenkins')
-    def test_ssl_verification_disabled(self, mock_jenkins_cls):
-        mock_server = MagicMock()
-        mock_jenkins_cls.return_value = mock_server
+    @patch('jenkins_logs_parser.main.requests.Session')
+    def test_ssl_verification_disabled(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, headers={'X-Jenkins': '2.x'})
+        mock_session_cls.return_value = mock_session
         config = _make_config()
         create_jenkins_server(config)
-        self.assertFalse(mock_server._session.verify)
+        self.assertFalse(mock_session.verify)
 
-    @patch('jenkins_logs_parser.main.jenkins.Jenkins')
-    def test_no_proxy_when_not_configured(self, mock_jenkins_cls):
-        mock_server = MagicMock()
-        mock_jenkins_cls.return_value = mock_server
+    @patch('jenkins_logs_parser.main.requests.Session')
+    def test_no_proxy_when_not_configured(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, headers={'X-Jenkins': '2.x'})
+        mock_session_cls.return_value = mock_session
         config = _make_config(proxy_url='')
         create_jenkins_server(config)
-        # proxies should not have been set explicitly
-        self.assertNotIn(
-            call._session.__setitem__,
-            mock_server.mock_calls,
-        )
-        # Verify that .proxies was never assigned (attribute not set to a dict)
-        self.assertNotIsInstance(
-            mock_server._session.proxies,
-            dict,
-        )
+        # proxies must not have been set to a dict
+        self.assertNotIsInstance(mock_session.proxies, dict)
 
-    @patch('jenkins_logs_parser.main.jenkins.Jenkins')
-    def test_proxy_configured_from_config(self, mock_jenkins_cls):
-        mock_server = MagicMock()
-        mock_jenkins_cls.return_value = mock_server
+    @patch('jenkins_logs_parser.main.requests.Session')
+    def test_proxy_configured_from_config(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, headers={'X-Jenkins': '2.x'})
+        mock_session_cls.return_value = mock_session
         config = _make_config(proxy_url='http://proxy.example.com:3128')
         create_jenkins_server(config)
         self.assertEqual(
-            mock_server._session.proxies,
+            mock_session.proxies,
             {
                 'http': 'http://proxy.example.com:3128',
                 'https': 'http://proxy.example.com:3128',
             },
         )
 
-    @patch('jenkins_logs_parser.main.jenkins.Jenkins')
-    def test_get_version_called(self, mock_jenkins_cls):
-        mock_server = MagicMock()
-        mock_jenkins_cls.return_value = mock_server
+    @patch('jenkins_logs_parser.main.requests.Session')
+    def test_get_version_called(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, headers={'X-Jenkins': '2.x'})
+        mock_session_cls.return_value = mock_session
         config = _make_config()
         create_jenkins_server(config)
-        mock_server.get_version.assert_called_once()
+        mock_session.get.assert_called_once()
+
+    @patch('jenkins_logs_parser.main.requests.Session')
+    def test_auth_set_from_config(self, mock_session_cls):
+        mock_session = MagicMock()
+        mock_session.get.return_value = MagicMock(status_code=200, headers={'X-Jenkins': '2.x'})
+        mock_session_cls.return_value = mock_session
+        config = _make_config(token='secret')
+        create_jenkins_server(config)
+        self.assertEqual(mock_session.auth, ('user', 'secret'))
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +211,7 @@ class TestGetJobBuildHistory(unittest.TestCase):
 
     def test_raises_on_not_found(self):
         server = MagicMock()
-        server.get_job_info.side_effect = jenkins.NotFoundException()
+        server.get_job_info.side_effect = JenkinsNotFoundError()
         with self.assertRaises(ValueError):
             get_job_build_history(server, 'missing-job')
 
@@ -217,7 +298,7 @@ class TestGetLogs(unittest.TestCase):
 
         def side_effect(job, num):
             if num == 2:
-                raise jenkins.NotFoundException()
+                raise JenkinsNotFoundError()
             return f"log-{num}"
 
         server.get_build_console_output.side_effect = side_effect

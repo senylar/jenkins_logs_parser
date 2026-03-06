@@ -5,10 +5,9 @@ import tempfile
 import warnings
 import sys
 from pathlib import Path
-from urllib.error import HTTPError
 
-import jenkins
 import platformdirs
+import requests
 from urllib3.exceptions import InsecureRequestWarning
 
 # Игнорируем предупреждения о небезопасном соединении
@@ -16,6 +15,50 @@ warnings.simplefilter('ignore', InsecureRequestWarning)
 
 APP_NAME = "jenkins-logs"
 APP_AUTHOR = "jenkins-log-parser"
+
+
+class JenkinsNotFoundError(Exception):
+    """Исключение: джоба или билд не найдены на сервере (HTTP 404)."""
+
+
+class JenkinsClient:
+    """Клиент для работы с Jenkins API через прямые HTTP-запросы."""
+
+    def __init__(self, session: requests.Session, base_url: str):
+        self._session = session
+        self._base_url = base_url.rstrip('/')
+
+    def _job_url(self, job_name: str) -> str:
+        """Формирует базовый URL для джобы (поддерживает вложенные папки через '/').
+
+        Например: 'folder/job' → '<base>/job/folder/job/job'
+        """
+        parts = job_name.split('/')
+        return self._base_url + '/job/' + '/job/'.join(parts)
+
+    def get_version(self) -> str:
+        """Возвращает версию Jenkins (значение заголовка X-Jenkins)."""
+        resp = self._session.get(f"{self._base_url}/api/json")
+        resp.raise_for_status()
+        return resp.headers.get('X-Jenkins', 'unknown')
+
+    def get_job_info(self, job_name: str) -> dict:
+        """Возвращает информацию о джобе включая полный список билдов (allBuilds=true)."""
+        url = self._job_url(job_name) + '/api/json'
+        resp = self._session.get(url, params={'allBuilds': 'true', 'tree': 'builds[number]'})
+        if resp.status_code == 404:
+            raise JenkinsNotFoundError(job_name)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_build_console_output(self, job_name: str, build_number: int) -> str:
+        """Возвращает текст консоли для указанного билда."""
+        url = self._job_url(job_name) + f'/{build_number}/consoleText'
+        resp = self._session.get(url)
+        if resp.status_code == 404:
+            raise JenkinsNotFoundError(f"{job_name}#{build_number}")
+        resp.raise_for_status()
+        return resp.text
 
 
 def get_config_path():
@@ -149,45 +192,38 @@ def show_config():
     print(f"Путь: {config.get('logs', 'path', fallback='не установлен')}")
 
 
-def create_jenkins_server(config):
-    """Создает и возвращает экземпляр Jenkins-сервера на основе конфигурации."""
+def create_jenkins_server(config) -> JenkinsClient:
+    """Создает и возвращает клиент Jenkins на основе конфигурации."""
     jenkins_config = config['jenkins']
     token = jenkins_config.get('token')
     if not token:
         raise ValueError("Токен не установлен.  Запустите с параметром --setup для настройки.")
 
-    server = jenkins.Jenkins(
-        jenkins_config['url'],
-        username=jenkins_config['username'],
-        password=token
-    )
+    session = requests.Session()
+    session.auth = (jenkins_config['username'], token)
     # Отключаем проверку SSL-сертификата
-    server._session.verify = False
+    session.verify = False
 
     # Настраиваем прокси из конфигурации (необязательно)
     proxy_url = config.get('proxy', 'url', fallback='').strip()
     if proxy_url:
-        server._session.proxies = {
+        session.proxies = {
             "http": proxy_url,
             "https": proxy_url,
         }
 
+    client = JenkinsClient(session, jenkins_config['url'])
     # Проверяем соединение
-    server.get_version()
-    return server
+    client.get_version()
+    return client
 
 
 def get_job_build_history(server, job_name):
     """Получает историю номеров билдов для указанной джобы."""
     try:
-        job_info = server.get_job_info(job_name, fetch_all_builds=True)
+        job_info = server.get_job_info(job_name)
         return {i["number"] for i in job_info['builds']}
-    except HTTPError as e:
-        if e.code == 404:
-            raise ValueError(f"Ошибка:  Джоб с именем '{job_name}' не найден.")
-        else:
-            raise
-    except jenkins.NotFoundException:
+    except JenkinsNotFoundError:
         raise ValueError(f"Ошибка: Джоб с именем '{job_name}' не найден.")
 
 
@@ -238,7 +274,7 @@ def get_logs(server, job_name, build_numbers):
         try:
             log = server.get_build_console_output(job_name, number)
             logs.append(log)
-        except jenkins.NotFoundException:
+        except JenkinsNotFoundError:
             print(f"Предупреждение: Билд номер {number} для джобы '{job_name}' не найден.")
     return logs
 
